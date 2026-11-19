@@ -1,0 +1,23 @@
+# Build trees
+/build*/
+/out/
+/.vs/
+CMakeUserPresets.json
+*.user
+
+# Local resources: third-party or personal images stay out of the repository (see assets/README.md)
+/assets/textures/
+/assets/materials/
+
+# Internal documents kept locally
+/production_engine_spec.md
+/painting_engine_spec.md
+
+# Editor and OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.rawproj.tmp-*
+*.rawproj.bak
+__pycache__/
