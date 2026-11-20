@@ -75,11 +75,17 @@ void main() {
     if(radius<=0.0) { weight=0.0; return; }
     ivec2 at=ivec2(gl_FragCoord.xy);
     vec2 p=vec2(originPx+at)+.5;
-    float minor=radius*clamp(aspect,.05,1.0);
-    vec2 local=rotateBack(p-centerPx,angle)/vec2(radius,minor);
+    // Thin tips keep their ink: a tip narrower than one pixel is drawn one pixel wide with
+    // proportionally less ink, and the edge is the pixel's area coverage (a 1-px linear ramp), so a
+    // line puts the same ink into every row whatever its phase against the pixel grid.
+    float minorTrue=radius*clamp(aspect,.05,1.0);
+    float minor=max(minorTrue,0.5);
+    float major=max(radius,0.5);
+    float thin=minorTrue/minor;
+    vec2 local=rotateBack(p-centerPx,angle)/vec2(major,minor);
     float rho=length(local);
-    float w=min(1.0,.5/max(.125,minor));
-    float cover=1.0-smoothstep(1.0-w,1.0+w,rho);
+    float w=.5/minor;
+    float cover=clamp((1.0+w-rho)/(2.0*w),0.0,1.0)*thin;
     if(kind==1) cover*=exp(-4.5*rho*rho);
     else if(hardness<1.0) cover*=1.0-smoothstep(clamp(hardness,0.0,1.0),1.0,rho);
     if(useTipMask) {
@@ -162,6 +168,65 @@ vec3 encode(vec3 c) {
 void main() {
     vec4 p=texture(layerTex,uv)*clamp(opacity,0.0,1.0);
     pixel=vec4(encode(p.rgb+paper*(1.0-p.a)),1.0);
+}
+)glsl";
+
+// Zoomed-out display (0 < k < 1). A screen pixel covers 1/k × 1/k document pixels; a single bilinear
+// sample per screen pixel skips most of them, so thin lines break into dashes. Instead every screen
+// pixel gets the exact area average of the document under it: each composed tile adds the part of the
+// footprint that falls on its own texels (additive blending into a premultiplied accumulator), so the
+// sum over tiles is the box filter of the whole image without seams. Beyond 24 document pixels per
+// screen pixel the footprint is approximated by 24 × 24 cell samples.
+inline constexpr const char* kBoxDisplayFragment = R"glsl(#version 330 core
+uniform sampler2D layerTex;
+uniform vec2 originPx;      // client px of document (0, 0), top-left origin
+uniform float clientHeight;
+uniform float docPerPx;     // 1 / k
+uniform vec2 tileOrigin;    // document px of this tile's texel (0, 0)
+layout(location=0) out vec4 pixel;
+void main() {
+    vec2 screen=vec2(floor(gl_FragCoord.x),clientHeight-1.0-floor(gl_FragCoord.y));
+    vec2 lo=(screen-originPx)*docPerPx-tileOrigin;
+    vec2 hi=lo+vec2(docPerPx);
+    ivec2 a=ivec2(max(floor(lo),vec2(0.0)));
+    ivec2 b=ivec2(min(ceil(hi),vec2(128.0)));
+    vec4 sum=vec4(0.0);
+    if(b.x>a.x && b.y>a.y) {
+        if(docPerPx<=24.0) {
+            for(int y=a.y;y<b.y;++y) {
+                float wy=min(hi.y,float(y+1))-max(lo.y,float(y));
+                for(int x=a.x;x<b.x;++x) {
+                    float wx=min(hi.x,float(x+1))-max(lo.x,float(x));
+                    sum+=wx*wy*texelFetch(layerTex,ivec2(x,y),0);
+                }
+            }
+        } else {
+            float cell=docPerPx/24.0;
+            for(int j=0;j<24;++j) {
+                for(int i=0;i<24;++i) {
+                    vec2 p=lo+(vec2(i,j)+0.5)*cell;
+                    if(all(greaterThanEqual(p,vec2(0.0))) && all(lessThan(p,vec2(128.0))))
+                        sum+=cell*cell*texelFetch(layerTex,ivec2(p),0);
+                }
+            }
+        }
+    }
+    pixel=sum/(docPerPx*docPerPx);
+}
+)glsl";
+
+// The accumulated average over the opaque paper, then one sRGB encode (§2).
+inline constexpr const char* kBoxResolveFragment = R"glsl(#version 330 core
+uniform sampler2D accum;
+uniform vec3 paper;
+layout(location=0) out vec4 pixel;
+vec3 encode(vec3 c) {
+    c=clamp(c,0.0,1.0);
+    return mix(12.92*c,1.055*pow(c,vec3(1.0/2.4))-0.055,step(vec3(0.0031308),c));
+}
+void main() {
+    vec4 p=texelFetch(accum,ivec2(gl_FragCoord.xy),0);
+    pixel=vec4(encode(p.rgb+paper*(1.0-clamp(p.a,0.0,1.0))),1.0);
 }
 )glsl";
 

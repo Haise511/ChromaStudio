@@ -163,6 +163,8 @@ TileRenderer::TileRenderer(const gl::Context& context, int documentWidth, int do
     dabComposite_ = std::make_unique<gl::Program>(context, "dab composite", kFullscreenVertex, kDabCompositeFragment);
     resolve_ = std::make_unique<gl::Program>(context, "resolve", kFullscreenVertex, kResolveFragment);
     display_ = std::make_unique<gl::Program>(context, "display", kQuadVertex, kDisplayFragment);
+    boxDisplay_ = std::make_unique<gl::Program>(context, "box display", kQuadVertex, kBoxDisplayFragment);
+    boxResolve_ = std::make_unique<gl::Program>(context, "box resolve", kQuadVertex, kBoxResolveFragment);
     ring_ = std::make_unique<gl::Program>(context, "ring", kQuadVertex, kRingFragment);
     composite_ = std::make_unique<gl::Program>(context, "composite", kFullscreenVertex, kCompositeFragment);
     unitCoverage_ = std::make_unique<gl::Program>(context, "unit coverage", kFullscreenVertex, kUnitCoverageFragment);
@@ -205,6 +207,13 @@ TileRenderer::TileRenderer(const gl::Context& context, int documentWidth, int do
     api_.uniform1i(display_->uniform("layerTex"), kUnitLayer);
     displayU_ = {display_->uniform("rectNdc"), display_->uniform("uvRect"), display_->uniform("paper"),
                  display_->uniform("opacity")};
+    boxDisplay_->use();
+    api_.uniform1i(boxDisplay_->uniform("layerTex"), kUnitLayer);
+    boxU_ = {boxDisplay_->uniform("rectNdc"),      boxDisplay_->uniform("uvRect"),   boxDisplay_->uniform("originPx"),
+             boxDisplay_->uniform("clientHeight"), boxDisplay_->uniform("docPerPx"), boxDisplay_->uniform("tileOrigin")};
+    boxResolve_->use();
+    api_.uniform1i(boxResolve_->uniform("accum"), kUnitLayer);
+    boxResolveU_ = {boxResolve_->uniform("rectNdc"), boxResolve_->uniform("uvRect"), boxResolve_->uniform("paper")};
 
     composite_->use();
     api_.uniform1i(composite_->uniform("bottomImage"), kUnitBase);
@@ -328,6 +337,8 @@ TileRenderer::~TileRenderer() {
     api_.deleteFramebuffers(3, framebuffers);
     const GLuint textures[] = {selection_, pattern_, tipMask_};
     glDeleteTextures(3, textures);
+    if (accumFbo_) api_.deleteFramebuffers(1, &accumFbo_);
+    if (accumTex_) glDeleteTextures(1, &accumTex_);
     const GLuint samplers[] = {nearestSampler_, linearSampler_};
     api_.deleteSamplers(2, samplers);
     pool_->release(gl::kR16f, tempWeight_);
@@ -1473,8 +1484,13 @@ void TileRenderer::drawDocument(const DocumentFrame& frame, const LayerStack& st
         hashInto(treeHash_, static_cast<std::uint64_t>(n.props.blendId));
     }
 
-    // Magnified pixels stay crisp; minified ones are filtered.
-    const GLuint sampler = k >= 1.0 ? nearestSampler_ : linearSampler_;
+    // Minified: every screen pixel averages the document pixels under it (thin lines stay whole).
+    if (k < 1.0) {
+        drawMinified(frame, stack, tx0, tx1, ty0, ty1);
+        return;
+    }
+    // Magnified (and 1:1) pixels stay crisp.
+    const GLuint sampler = nearestSampler_;
     const double toNdcX = 2.0 / frame.clientWidth;
     const double toNdcY = 2.0 / frame.clientHeight;
     for (int ty = ty0; ty <= ty1; ++ty) {
@@ -1508,6 +1524,93 @@ void TileRenderer::drawDocument(const DocumentFrame& frame, const LayerStack& st
             api_.bindSampler(kUnitLayer, 0);
             drop(tile);
         }
+    }
+    api_.useProgram(0);
+}
+
+void TileRenderer::drawMinified(const DocumentFrame& frame, const LayerStack& stack, int tx0, int tx1, int ty0, int ty1) {
+    const int viewportWidth = frame.viewportX1 - frame.viewportX0;
+    const int viewportHeight = frame.viewportY1 - frame.viewportY0;
+    const double k = frame.pixelsPerDocPx;
+    // The accumulator follows the client size.
+    if (accumWidth_ != frame.clientWidth || accumHeight_ != frame.clientHeight || accumTex_ == 0) {
+        if (accumTex_ == 0) glGenTextures(1, &accumTex_);
+        if (accumFbo_ == 0) api_.genFramebuffers(1, &accumFbo_);
+        api_.activeTexture(gl::kTexture0 + kUnitLayer);
+        glBindTexture(GL_TEXTURE_2D, accumTex_);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(gl::kRgba16f), frame.clientWidth, frame.clientHeight, 0, GL_RGBA,
+                     GL_FLOAT, nullptr);
+        api_.bindFramebuffer(gl::kFramebuffer, accumFbo_);
+        api_.framebufferTexture2D(gl::kFramebuffer, gl::kColorAttachment0, GL_TEXTURE_2D, accumTex_, 0);
+        accumWidth_ = frame.clientWidth;
+        accumHeight_ = frame.clientHeight;
+    }
+    const double toNdcX = 2.0 / frame.clientWidth;
+    const double toNdcY = 2.0 / frame.clientHeight;
+    const auto beginAccumulation = [&] {
+        api_.bindFramebuffer(gl::kFramebuffer, accumFbo_);
+        glViewport(0, 0, frame.clientWidth, frame.clientHeight);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(frame.viewportX0, frame.clientHeight - frame.viewportY1, viewportWidth, viewportHeight);
+    };
+    beginAccumulation();
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    bool any = false;
+    for (int ty = ty0; ty <= ty1; ++ty) {
+        for (int tx = tx0; tx <= tx1; ++tx) {
+            Image tile = displayTile(stack, tx, ty);  // may compose through offscreen targets
+            if (tile.texture == 0) continue;  // transparent: adds nothing
+            any = true;
+            const int dx0 = tx * kTileSize;
+            const int dy0 = ty * kTileSize;
+            // Every screen pixel whose footprint touches the tile: its rectangle grown by one pixel.
+            const double sx0 = std::floor(frame.originX + dx0 * k) - 1.0;
+            const double sx1 = std::ceil(frame.originX + (dx0 + kTileSize) * k) + 1.0;
+            const double sy0 = std::floor(frame.originY + dy0 * k) - 1.0;
+            const double sy1 = std::ceil(frame.originY + (dy0 + kTileSize) * k) + 1.0;
+            beginAccumulation();
+            glEnable(GL_BLEND);
+            api_.blendEquation(gl::kFuncAdd);
+            api_.blendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ONE);
+            boxDisplay_->use();
+            api_.uniform4f(boxU_.rectNdc, static_cast<float>(sx0 * toNdcX - 1.0), static_cast<float>(1.0 - sy0 * toNdcY),
+                           static_cast<float>(sx1 * toNdcX - 1.0), static_cast<float>(1.0 - sy1 * toNdcY));
+            api_.uniform4f(boxU_.uvRect, 0.0f, 0.0f, 1.0f, 1.0f);
+            api_.uniform2f(boxU_.originPx, static_cast<float>(frame.originX), static_cast<float>(frame.originY));
+            api_.uniform1f(boxU_.clientHeight, static_cast<float>(frame.clientHeight));
+            api_.uniform1f(boxU_.docPerPx, static_cast<float>(1.0 / k));
+            api_.uniform2f(boxU_.tileOrigin, static_cast<float>(dx0), static_cast<float>(dy0));
+            api_.bindSampler(kUnitLayer, nearestSampler_);
+            bindTexture(kUnitLayer, tile.texture);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            api_.bindSampler(kUnitLayer, 0);
+            glDisable(GL_BLEND);
+            drop(tile);
+        }
+    }
+    // Over the paper rectangle (rounded as the shell paints it), one encode.
+    api_.bindFramebuffer(gl::kFramebuffer, 0);
+    glViewport(0, 0, frame.clientWidth, frame.clientHeight);
+    const int px0 = std::max(frame.viewportX0, static_cast<int>(std::lround(frame.originX)));
+    const int py0 = std::max(frame.viewportY0, static_cast<int>(std::lround(frame.originY)));
+    const int px1 = std::min(frame.viewportX1, static_cast<int>(std::lround(frame.originX + width_ * k)));
+    const int py1 = std::min(frame.viewportY1, static_cast<int>(std::lround(frame.originY + height_ * k)));
+    if (any && px1 > px0 && py1 > py0) {
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(px0, frame.clientHeight - py1, px1 - px0, py1 - py0);
+        glDisable(GL_BLEND);
+        boxResolve_->use();
+        api_.uniform4f(boxResolveU_.rectNdc, -1.0f, 1.0f, 1.0f, -1.0f);
+        api_.uniform4f(boxResolveU_.uvRect, 0.0f, 0.0f, 1.0f, 1.0f);
+        api_.uniform3f(boxResolveU_.paper, frame.paper[0], frame.paper[1], frame.paper[2]);
+        api_.bindSampler(kUnitLayer, nearestSampler_);
+        bindTexture(kUnitLayer, accumTex_);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        bindTexture(kUnitLayer, 0);  // never sampled while it is the next frame's render target
+        api_.bindSampler(kUnitLayer, 0);
     }
     api_.useProgram(0);
 }

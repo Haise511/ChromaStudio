@@ -593,6 +593,130 @@ TEST_CASE(displayCacheFollowsChanges) {
     g_context->makeCurrent();
 }
 
+// ── Thin lines (light pen pressure) ──────────────────────────────────────────
+// A thin line must put the same ink into every row along it: in the document (the stamp's coverage
+// for any diameter, sub-pixel included) and on screen when the view is zoomed out (the display filter
+// must average every document pixel under a screen pixel). Ink per row = Σ alpha across the row.
+
+namespace {
+
+struct RowInk {
+    double mean = 0.0;
+    double cv = 0.0;  // coefficient of variation along the line
+};
+
+RowInk rowInk(const std::function<double(int, int)>& ink, int x0, int x1, int y0, int y1) {
+    std::vector<double> rows;
+    for (int y = y0; y < y1; ++y) {
+        double s = 0.0;
+        for (int x = x0; x < x1; ++x) s += ink(x, y);
+        rows.push_back(s);
+    }
+    double mean = 0.0;
+    for (const double r : rows) mean += r;
+    mean /= static_cast<double>(rows.size());
+    double var = 0.0;
+    for (const double r : rows) var += (r - mean) * (r - mean);
+    var /= static_cast<double>(rows.size());
+    return {mean, mean > 0 ? std::sqrt(var) / mean : 1.0};
+}
+
+double srgbToLinear8(int v) {
+    const double e = v / 255.0;
+    return e <= 0.04045 ? e / 12.92 : std::pow((e + 0.055) / 1.055, 2.4);
+}
+
+}  // namespace
+
+TEST_CASE(thinLinesKeepTheirInk) {
+    WNDCLASSW wc{};
+    wc.style = CS_OWNDC;
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"ChromaStudio.GpuTests.Thin";
+    RegisterClassW(&wc);
+    constexpr int kSize = 512;
+    HWND window = CreateWindowExW(0, wc.lpszClassName, L"", WS_POPUP, 0, 0, kSize, kSize, nullptr, nullptr, wc.hInstance, nullptr);
+    std::string failure;
+    {
+        std::unique_ptr<chroma::gl::Context> context = window ? chroma::gl::Context::create(window, failure) : nullptr;
+        CHECK(context != nullptr);
+        if (context) {
+            // A pencil-like hatching line, 6° off vertical, across tile seams.
+            const chroma::core::V a{100.3, 20.0}, b{150.7, 490.0};
+            const double secant = std::hypot(b.x - a.x, b.y - a.y) / (b.y - a.y);  // row width / diameter
+            for (const double diameter : {0.6, 1.2, 2.0, 3.0}) {
+                TileRenderer renderer(*context, kSize, kSize);
+                std::vector<Dab> dabs;
+                const double step = std::min(0.08 * diameter, 0.08);
+                const double length = std::hypot(b.x - a.x, b.y - a.y);
+                for (double s = 0; s <= length; s += step) {
+                    const double t = s / length;
+                    dabs.push_back(dab(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, diameter / 2, 1));
+                }
+                TileMap tiles;
+                publish(tiles, strokeOf(renderer, inkSetup(true), {}, dabs));
+                const auto alphaAt = [&](int x, int y) {
+                    const auto it = tiles.find({x / kTileSize, y / kTileSize});
+                    return it == tiles.end() ? 0.0 : static_cast<double>(pixelAt(*it->second, x % kTileSize, y % kTileSize).a);
+                };
+                const RowInk doc = rowInk(alphaAt, 80, 180, 40, 470);
+
+                // The same layer on screen at 51 % (the editor in half a 1920-px screen) and at 30 %.
+                chroma::core::LayerTree tree = chroma::core::LayerTree::single();
+                const std::uint64_t layer = tree.rasters().front();
+                LayerStack stack;
+                stack.tree = &tree;
+                stack.tiles = [&](std::uint64_t id, int tx, int ty) -> TileRef {
+                    const auto it = tiles.find({tx, ty});
+                    return id != layer || it == tiles.end() ? nullptr : it->second;
+                };
+                RowInk screen[2];
+                const double zooms[2] = {0.51, 0.3};
+                for (int z = 0; z < 2; ++z) {
+                    DocumentFrame frame;
+                    frame.clientWidth = frame.clientHeight = kSize;
+                    frame.viewportX1 = frame.viewportY1 = kSize;
+                    frame.pixelsPerDocPx = zooms[z];
+                    glClearColor(1, 1, 1, 1);
+                    glClear(GL_COLOR_BUFFER_BIT);
+                    renderer.drawDocument(frame, stack);
+                    glFinish();
+                    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(kSize) * kSize * 4);
+                    glReadBuffer(GL_BACK);
+                    glReadPixels(0, 0, kSize, kSize, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+                    const auto darkness = [&](int x, int y) {  // window rows are bottom-up
+                        return 1.0 - srgbToLinear8(rgba[(static_cast<std::size_t>(kSize - 1 - y) * kSize + x) * 4 + 1]);
+                    };
+                    const double k = zooms[z];
+                    screen[z] = rowInk(darkness, static_cast<int>(80 * k), static_cast<int>(180 * k) + 1,
+                                       static_cast<int>(40 * k) + 1, static_cast<int>(470 * k));
+                    screen[z].mean /= k;  // ink per document row
+                    // In place: the ink's centre in a screen row is where the line crosses that row.
+                    for (const int row : {static_cast<int>(150 * k), static_cast<int>(400 * k)}) {
+                        double sum = 0.0, moment = 0.0;
+                        for (int x = 0; x < static_cast<int>(kSize * k); ++x) {
+                            sum += darkness(x, row);
+                            moment += darkness(x, row) * (x + 0.5);
+                        }
+                        const double docY = (row + 0.5) / k;
+                        const double lineX = a.x + (b.x - a.x) * (docY - a.y) / (b.y - a.y);
+                        CHECK(sum > 0 && std::abs(moment / sum - lineX * k) < 0.75);
+                    }
+                }
+                const double ideal = diameter * secant;
+                std::printf("    D %.1f px: document %.3f of ideal, variation %.1f%%; screen 51%% %.3f, %.1f%%; screen 30%% %.3f, %.1f%%\n",
+                            diameter, doc.mean / ideal, doc.cv * 100, screen[0].mean / ideal, screen[0].cv * 100,
+                            screen[1].mean / ideal, screen[1].cv * 100);
+                CHECK(std::abs(doc.mean / ideal - 1) < 0.02 && doc.cv < 0.02);
+                for (const RowInk& s : screen) CHECK(std::abs(s.mean / ideal - 1) < 0.03 && s.cv < 0.03);
+            }
+        }
+    }
+    if (window) DestroyWindow(window);
+    g_context->makeCurrent();
+}
+
 // ── Wet stamps (§5, §12.1 "Пигмент") ─────────────────────────────────────────
 
 namespace {

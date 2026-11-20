@@ -86,8 +86,8 @@ Measured with `chroma_bench` on an Intel Core i5-12400F and an RTX 3060: a 4096 
 | p95 | whole canvas in view | 100 % zoom | budget |
 |---|---:|---:|---:|
 | CPU frame preparation | 2.4 ms | 0.4 ms | 4 ms |
-| GPU frame time | 6.5 ms | 5.0 ms | 12 ms |
-| pen packet → frame on screen | 24.6 ms | 21.4 ms | 33 ms |
+| GPU frame time | 6.9 ms | 5.2 ms | 12 ms |
+| pen packet → frame on screen | 24.1 ms | 21.7 ms | 33 ms |
 
 Full numbers, including p99 and start-up times, are in [docs/measurements-2026-11-20.md](docs/measurements-2026-11-20.md).
 

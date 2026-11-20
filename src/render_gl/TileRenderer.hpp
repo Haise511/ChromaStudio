@@ -343,6 +343,20 @@ private:
     struct DisplayUniforms {
         GLint rectNdc, uvRect, paper, opacity;
     } displayU_{};
+    // Zoomed-out display: an exact box filter accumulated per tile, then resolved over the paper.
+    std::unique_ptr<gl::Program> boxDisplay_;
+    std::unique_ptr<gl::Program> boxResolve_;
+    struct BoxUniforms {
+        GLint rectNdc, uvRect, originPx, clientHeight, docPerPx, tileOrigin;
+    } boxU_{};
+    struct BoxResolveUniforms {
+        GLint rectNdc, uvRect, paper;
+    } boxResolveU_{};
+    GLuint accumTex_ = 0;  // RGBA16F, premultiplied, the client size
+    GLuint accumFbo_ = 0;
+    int accumWidth_ = 0;
+    int accumHeight_ = 0;
+    void drawMinified(const DocumentFrame& frame, const LayerStack& stack, int tx0, int tx1, int ty0, int ty1);
     struct RingUniforms {
         GLint rectNdc, uvRect, center, radius;
     } ringU_{};
