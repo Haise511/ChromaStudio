@@ -261,9 +261,9 @@ Image8 extract(const TileSource& layer, const std::vector<std::pair<int, int>>& 
             std::uint8_t* out = &image.rgba[(static_cast<std::size_t>(y) * static_cast<std::size_t>(image.width) + static_cast<std::size_t>(x)) * 4];
             const std::uint8_t a = toByte(p.a);
             if (a == 0) continue;  // rgb 0 at a = 0 (§10.3)
-            out[0] = toByte(linearToSrgb(p.r / p.a));
-            out[1] = toByte(linearToSrgb(p.g / p.a));
-            out[2] = toByte(linearToSrgb(p.b / p.a));
+            out[0] = toByte(p.r / p.a);
+            out[1] = toByte(p.g / p.a);
+            out[2] = toByte(p.b / p.a);
             out[3] = a;
         }
     }
@@ -279,7 +279,7 @@ std::vector<TileEdit> placeImage(const Image8& image, int width, int height) {
             if (px < 0 || py < 0 || px >= width || py >= height) continue;
             const std::uint8_t* in = &image.rgba[(static_cast<std::size_t>(y) * static_cast<std::size_t>(image.width) + static_cast<std::size_t>(x)) * 4];
             if (in[3] == 0) continue;
-            const auto pma = premultipliedLinear(in[0] / 255.0, in[1] / 255.0, in[2] / 255.0, in[3] / 255.0);
+            const auto pma = premultipliedInk(in[0] / 255.0, in[1] / 255.0, in[2] / 255.0, in[3] / 255.0);
             auto& t = built[{px / kTileSize, py / kTileSize}];
             if (!t) t = std::make_shared<TileData>();
             writePixel(*t, px % kTileSize, py % kTileSize, {pma[0], pma[1], pma[2], pma[3]});

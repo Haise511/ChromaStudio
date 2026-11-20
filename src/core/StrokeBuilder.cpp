@@ -35,6 +35,13 @@ StrokeBuilder::StrokeBuilder(const BrushProfile& profile, double diameterPx)
       stabilizer_(profile_.stabilizer),
       walker_(style_) {
     validate(profile_);
+    // The size slider scales the brush, tapers included: a 3-px pen starts as quickly, relative to its
+    // width, as the 12-px profile it comes from.
+    if (profile_.tip.diameter > 0 && diameterPx > 0) {
+        const double scale = diameterPx / profile_.tip.diameter;
+        profile_.taper.startPx = std::min(profile_.taper.startPx * scale, 2048.0);
+        profile_.taper.endPx = std::min(profile_.taper.endPx * scale, 2048.0);
+    }
 }
 
 double StrokeBuilder::previewEnvelope(double arc) const {

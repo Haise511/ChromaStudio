@@ -13,7 +13,7 @@
 //   clip           the composed chain cut back to the base silhouette aBase·opacityBase
 //   reservoir      the surface under a wet stamp, read back once per stamp (§5)
 //   blur mix       the Blur Brush result mix(S, blur, w); lock apply: Alpha Lock for wet output (§7)
-//   display        one composed tile onto the window over the paper, sRGB-encoded once (§2)
+//   display        one composed tile onto the window over the paper (values are already sRGB)
 //   ring           brush outline at the cursor (§11 hover contour)
 // All tile images share origin and size; GL row 0 of a tile is its logical top (§7.1).
 
@@ -153,21 +153,17 @@ void main() {
 }
 )glsl";
 
-// One composed tile on screen over the opaque paper, then one sRGB encode (§2). Texture row 0 is the
-// top; the quad flips Y once.
+// One composed tile on screen over the opaque paper. The canvas holds encoded sRGB, so the window gets
+// the values as they are. Texture row 0 is the top; the quad flips Y once.
 inline constexpr const char* kDisplayFragment = R"glsl(#version 330 core
 uniform sampler2D layerTex;
 uniform vec3 paper;
 uniform float opacity;
 in vec2 uv;
 layout(location=0) out vec4 pixel;
-vec3 encode(vec3 c) {
-    c=clamp(c,0.0,1.0);
-    return mix(12.92*c,1.055*pow(c,vec3(1.0/2.4))-0.055,step(vec3(0.0031308),c));
-}
 void main() {
     vec4 p=texture(layerTex,uv)*clamp(opacity,0.0,1.0);
-    pixel=vec4(encode(p.rgb+paper*(1.0-p.a)),1.0);
+    pixel=vec4(clamp(p.rgb+paper*(1.0-p.a),0.0,1.0),1.0);
 }
 )glsl";
 
@@ -215,18 +211,14 @@ void main() {
 }
 )glsl";
 
-// The accumulated average over the opaque paper, then one sRGB encode (§2).
+// The accumulated average over the opaque paper (encoded sRGB, like the canvas).
 inline constexpr const char* kBoxResolveFragment = R"glsl(#version 330 core
 uniform sampler2D accum;
 uniform vec3 paper;
 layout(location=0) out vec4 pixel;
-vec3 encode(vec3 c) {
-    c=clamp(c,0.0,1.0);
-    return mix(12.92*c,1.055*pow(c,vec3(1.0/2.4))-0.055,step(vec3(0.0031308),c));
-}
 void main() {
     vec4 p=texelFetch(accum,ivec2(gl_FragCoord.xy),0);
-    pixel=vec4(encode(p.rgb+paper*(1.0-clamp(p.a,0.0,1.0))),1.0);
+    pixel=vec4(clamp(p.rgb+paper*(1.0-clamp(p.a,0.0,1.0)),0.0,1.0),1.0);
 }
 )glsl";
 

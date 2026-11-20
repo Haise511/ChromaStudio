@@ -1042,9 +1042,9 @@ public:
                     const int y = std::min(docHeight_ - 1, static_cast<int>((j + 0.5) * docHeight_ / ph));
                     const core::Pixel p = layerPixel(id, x, y);
                     std::uint8_t* out = &rgba[(static_cast<std::size_t>(j) * static_cast<std::size_t>(pw) + i) * 4];
-                    out[0] = core::toByte(core::linearToSrgb(p.r + 1.0 - p.a));
-                    out[1] = core::toByte(core::linearToSrgb(p.g + 1.0 - p.a));
-                    out[2] = core::toByte(core::linearToSrgb(p.b + 1.0 - p.a));
+                    out[0] = core::toByte(p.r + 1.0 - p.a);
+                    out[1] = core::toByte(p.g + 1.0 - p.a);
+                    out[2] = core::toByte(p.b + 1.0 - p.a);
                     out[3] = 255;
                 }
             }
@@ -1241,7 +1241,7 @@ private:
 
     [[nodiscard]] render::BrushSetup brushSetup(const core::BrushProfile& profile, bool erase) const {
         render::BrushSetup setup =
-            render::brushSetupFor(profile, core::premultipliedLinear(color_[0], color_[1], color_[2], alpha_), erase);
+            render::brushSetupFor(profile, core::premultipliedInk(color_[0], color_[1], color_[2], alpha_), erase);
         if (const core::LayerNode* layer = activeLayer()) {
             setup.layer = layer->id;
             setup.alphaLock = layer->props.alphaLock;
@@ -1415,7 +1415,8 @@ private:
         if (x < 0 || y < 0 || x >= docWidth_ || y >= docHeight_) return;
         const core::Pixel p = compositePixel(x, y);
         if (p.a <= 0.0f) return;
-        setColor({core::linearToSrgb(p.r / p.a), core::linearToSrgb(p.g / p.a), core::linearToSrgb(p.b / p.a)}, p.a);
+        const auto straight = [&](float c) { return std::clamp(static_cast<double>(c) / p.a, 0.0, 1.0); };
+        setColor({straight(p.r), straight(p.g), straight(p.b)}, p.a);
     }
 
 public:
@@ -1876,7 +1877,7 @@ private:
         const bool everywhere = GetKeyState(VK_SHIFT) < 0;  // Shift: not only the connected area
         const core::SelectionMask region =
             core::floodMask(compositeSource(cache), docWidth_, docHeight_, x, y, tolerance_, !everywhere);
-        const auto ink = core::premultipliedLinear(color_[0], color_[1], color_[2], alpha_);
+        const auto ink = core::premultipliedInk(color_[0], color_[1], color_[2], alpha_);
         const auto edits = core::fillRegion(layerSource(layer->id), region, history_.meta().selection,
                                             {ink[0], ink[1], ink[2], ink[3]}, layer->props.alphaLock, docWidth_, docHeight_);
         commitEdits(layer->id, edits);
@@ -1966,8 +1967,7 @@ private:
         std::map<std::pair<int, int>, render::TileRef> cache;
         tiles->setSelection(nullptr);  // the geometry is the object, not the selection
         for (const core::VectorObject& o : objects) {
-            const auto ink = core::premultipliedLinear(core::linearToSrgb(o.rgba[0]), core::linearToSrgb(o.rgba[1]),
-                                                       core::linearToSrgb(o.rgba[2]), o.rgba[3]);
+            const auto ink = core::premultipliedInk(o.rgba[0], o.rgba[1], o.rgba[2], o.rgba[3]);
             render::BrushSetup setup = render::brushSetupFor(o.profile, ink, false);
             setup.layer = layer;
             resolveMasks(setup, o.profile);
@@ -2012,7 +2012,7 @@ private:
         core::VectorObject o;
         o.id = meta.layers.reserveId();
         o.knots = core::fitKnots(strokeDabs_, [&meta] { return meta.layers.reserveId(); });
-        o.rgba = {core::srgbToLinear(color_[0]), core::srgbToLinear(color_[1]), core::srgbToLinear(color_[2]), alpha_};
+        o.rgba = {color_[0], color_[1], color_[2], alpha_};
         o.profile = strokeProfile_;
         o.seed = strokeProfile_.grain ? strokeProfile_.grain->seed : 0;
         const std::size_t knots = o.knots.size();
@@ -2569,6 +2569,7 @@ private:
         viewFitted_ = false;
         applyGeometry();
         recoveredName_.clear();
+        migratedSuggestion_.clear();
         restartJournal(path_);
     }
 
@@ -2616,6 +2617,16 @@ private:
             showError(std::format(L"Не удалось открыть «{}».", path.filename().wstring()), treeError);
             return;
         }
+        if (loaded.snapshot->migratedFromLinear) {
+            resetDocument(*loaded.snapshot, {});
+            savedRevision_ = std::numeric_limits<std::uint64_t>::max();  // a modified copy
+            recoveredName_ = path.stem().wstring() + L" (sRGB)";
+            migratedSuggestion_ = path.parent_path() / (path.stem().wstring() + L" (sRGB).rawproj");
+            showNotice(L"Файл версии 0.1 переведён в sRGB; сохраните его как новый файл");
+            logf("migrated {} from linear light to sRGB", toUtf8(path.wstring()));
+            logDocument();
+            return;
+        }
         resetDocument(*loaded.snapshot, path);
         identity_ = loaded.identity;
         logf("opened {} in {:.0f} ms", toUtf8(path.wstring()),
@@ -2645,7 +2656,7 @@ private:
 
     bool saveAs() {
         fs::path suggested = path_;
-        if (suggested.empty()) suggested = L"Без имени.rawproj";
+        if (suggested.empty()) suggested = migratedSuggestion_.empty() ? fs::path(L"Без имени.rawproj") : migratedSuggestion_;
         const auto path = chroma::desktop::askSaveProject(owner(), suggested);
         return path && saveTo(*path);
     }
@@ -2795,7 +2806,7 @@ private:
                 if (alpha8 == 0) continue;  // RGB exactly zero where alpha is zero
                 for (int c = 0; c < 3; ++c) {
                     const double straight = std::clamp(sum[i * 4 + static_cast<std::size_t>(c)] / n / a, 0.0, 1.0);
-                    rgba[i * 4 + static_cast<std::size_t>(c)] = static_cast<std::uint8_t>(std::lround(core::linearToSrgb(straight) * 255.0));
+                    rgba[i * 4 + static_cast<std::size_t>(c)] = static_cast<std::uint8_t>(std::lround(straight * 255.0));
                 }
                 rgba[i * 4 + 3] = alpha8;
             }
@@ -2951,6 +2962,7 @@ private:
     int journalGeneration_ = 0;
     bool journalWarned_ = false;
     std::wstring recoveredName_;
+    fs::path migratedSuggestion_;  // where "Save as" proposes a migrated 0.1.0 file
     // Vector lineart.
     bool strokeVector_ = false;
     core::BrushProfile strokeProfile_;

@@ -25,7 +25,7 @@
 
 ## Highlights
 
-- **Pen first.** Windows Ink pressure and tilt through `WM_POINTER`, a time-based stabiliser (EMA or window), pressure curves and speed-aware tapering. The first and last segments of a stroke are drawn, not dropped.
+- **Pen first.** Windows Ink pressure and tilt through `WM_POINTER`, a time-based stabiliser (EMA or window), pressure curves and speed-aware tapering. Pens grow from a point at the start of a stroke; the first and last segments are drawn, not dropped. Lines thinner than a pixel stay whole and get lighter instead of breaking into dots, at any zoom.
 - **Seven built-in brushes:** hard pen, soft pen, fountain pen (tilt), airbrush, watercolour, grain brush, dot screentone — plus smudge and blur tools.
 - **Wet media.** Watercolour carries pigment from the surface stamp by stamp; smudge has a reservoir; both work across tile seams.
 - **Layers.** 27 blend modes, groups, clipping to the base, Alpha Lock, opacity, visibility and locks, drag-and-drop reordering.
@@ -101,7 +101,7 @@ Full numbers, including p99 and start-up times, are in [docs/measurements-2026-1
 | `src/ui` | The interface drawn on the GPU: SDF shapes, cached GDI text, layout in DIP, menus, docks, brush previews made by the real engine. |
 | `src/*.cpp` | The Win32 shell: Per-Monitor V2 window, pointer input with capture, dialogs, clipboard, the editor itself. |
 
-Pixels are linear-light, premultiplied, half-float, in sparse 128 × 128 tiles. The RAM copy of every tile is canonical and the GPU holds a cache, so a lost graphics device costs only the stroke in progress. History stores immutable tile versions that commands share, so undo is a pointer swap. The GPU compositor is checked against the CPU reference for all 27 blend modes to 0.002 per channel.
+Pixels are sRGB values with premultiplied alpha, half-float, in sparse 128 × 128 tiles, blended as they are — the way painting editors blend, so 50 % black over white is 128, exactly as in ibisPaint. Projects saved by version 0.1.0 (linear light) open converted and are saved as a new file. The RAM copy of every tile is canonical and the GPU holds a cache, so a lost graphics device costs only the stroke in progress. History stores immutable tile versions that commands share, so undo is a pointer swap. The GPU compositor is checked against the CPU reference for all 27 blend modes to 0.002 per channel.
 
 Comments in the code cite sections (§) of the internal engine specification, which is not published.
 

@@ -4,6 +4,10 @@
 //   manifest.json              format, version, size, colour space, layer tree, tile list
 //   tiles/<layer>/<tx>_<ty>.bin  128 × 128 little-endian binary16 RGBA, exactly 131 072 bytes
 //
+// Colour: "srgb-pma-f16le" — encoded sRGB, premultiplied, the space the canvas blends in. Files of
+// version 0.1.0 say "linear-srgb-pma-f16le" (linear light); they open converted, every tile and
+// vector colour, and are flagged as migrated so the shell saves them as a new file (§10.3).
+//
 // Opening validates the whole archive into a temporary snapshot before the caller replaces its
 // document: limits and paths first, then the manifest, then every tile. Saving writes a temporary
 // file in the destination directory, re-reads it to check the central directory and every CRC,
@@ -69,6 +73,7 @@ struct ProjectSnapshot {
     std::optional<core::SelectionMask> selection;  // nullopt: no active selection (§10.3)
     std::map<std::uint64_t, core::VectorLayer> vectors;  // objects of every vector layer, bottom to top
     std::shared_ptr<const std::vector<std::byte>> thumbnailPng;  // optional thumbnail.png, written as is
+    bool migratedFromLinear = false;  // read from a 0.1.0 linear-light file and converted (not written)
 };
 
 /// Identity of a file on disk, to notice changes made by another process (spec §10.3).

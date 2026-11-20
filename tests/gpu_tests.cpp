@@ -572,9 +572,9 @@ TEST_CASE(displayCacheFollowsChanges) {
                 glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
                 return px;
             };
-            const auto purple = centre();  // linear (.5, 0, .5) encoded once: 188
-            if (std::abs(purple[0] - 188) > 2) std::printf("    centre %d %d %d\n", purple[0], purple[1], purple[2]);
-            CHECK(std::abs(purple[0] - 188) <= 2 && purple[1] <= 2 && std::abs(purple[2] - 188) <= 2);
+            const auto purple = centre();  // (.5, 0, .5) is shown as it is: 128, as in sRGB editors
+            if (std::abs(purple[0] - 128) > 2) std::printf("    centre %d %d %d\n", purple[0], purple[1], purple[2]);
+            CHECK(std::abs(purple[0] - 128) <= 2 && purple[1] <= 2 && std::abs(purple[2] - 128) <= 2);
             CHECK(renderer.cachedTiles() == 1);
             CHECK(centre() == purple);  // from the cache
             setProps(tree, top, [](chroma::core::LayerProps& p) { p.opacity = 0.0; });
@@ -621,10 +621,7 @@ RowInk rowInk(const std::function<double(int, int)>& ink, int x0, int x1, int y0
     return {mean, mean > 0 ? std::sqrt(var) / mean : 1.0};
 }
 
-double srgbToLinear8(int v) {
-    const double e = v / 255.0;
-    return e <= 0.04045 ? e / 12.92 : std::pow((e + 0.055) / 1.055, 2.4);
-}
+double coverage8(int v) { return 1.0 - v / 255.0; }  // black over white on the sRGB canvas
 
 }  // namespace
 
@@ -686,7 +683,7 @@ TEST_CASE(thinLinesKeepTheirInk) {
                     glReadBuffer(GL_BACK);
                     glReadPixels(0, 0, kSize, kSize, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
                     const auto darkness = [&](int x, int y) {  // window rows are bottom-up
-                        return 1.0 - srgbToLinear8(rgba[(static_cast<std::size_t>(kSize - 1 - y) * kSize + x) * 4 + 1]);
+                        return coverage8(rgba[(static_cast<std::size_t>(kSize - 1 - y) * kSize + x) * 4 + 1]);
                     };
                     const double k = zooms[z];
                     screen[z] = rowInk(darkness, static_cast<int>(80 * k), static_cast<int>(180 * k) + 1,
@@ -710,6 +707,32 @@ TEST_CASE(thinLinesKeepTheirInk) {
                             screen[1].mean / ideal, screen[1].cv * 100);
                 CHECK(std::abs(doc.mean / ideal - 1) < 0.02 && doc.cv < 0.02);
                 for (const RowInk& s : screen) CHECK(std::abs(s.mean / ideal - 1) < 0.03 && s.cv < 0.03);
+            }
+            // The canvas blends as sRGB editors do: 50 % black on white paper is 128 (ibisPaint: 128;
+            // the 0.1.0 linear canvas showed 188).
+            TileRenderer renderer(*context, kSize, kSize);
+            TileMap tiles;
+            publish(tiles, strokeOf(renderer, inkSetup(true, {0, 0, 0, 0.5f}), {}, {dab(64, 64, 30, 1)}));
+            chroma::core::LayerTree tree = chroma::core::LayerTree::single();
+            const std::uint64_t layer = tree.rasters().front();
+            LayerStack stack;
+            stack.tree = &tree;
+            stack.tiles = [&](std::uint64_t id, int tx, int ty) -> TileRef {
+                const auto it = tiles.find({tx, ty});
+                return id != layer || it == tiles.end() ? nullptr : it->second;
+            };
+            DocumentFrame frame;
+            frame.clientWidth = frame.clientHeight = kSize;
+            frame.viewportX1 = frame.viewportY1 = kSize;
+            for (const double k : {1.0, 0.5}) {
+                frame.pixelsPerDocPx = k;
+                glClearColor(1, 1, 1, 1);
+                glClear(GL_COLOR_BUFFER_BIT);
+                renderer.drawDocument(frame, stack);
+                glFinish();
+                std::array<std::uint8_t, 4> px{};
+                glReadPixels(static_cast<int>(64 * k), kSize - 1 - static_cast<int>(64 * k), 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+                CHECK(std::abs(px[0] - 128) <= 1 && px[0] == px[1] && px[1] == px[2]);
             }
         }
     }

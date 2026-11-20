@@ -187,7 +187,8 @@ TEST_CASE(strokeTap) {
     }
 }
 
-// Dip pen: full start, end tapered to zero at the real last position; the replay covers the stroke.
+// Dip pen: grows from nothing over its first 7 px (as ibisPaint's dip pen), end tapered to zero at the
+// real last position; the replay covers the stroke.
 TEST_CASE(strokeLineWithEndTaper) {
     StrokeBuilder builder(brush("core.dip"), 12);
     std::vector<Dab> finals;
@@ -205,7 +206,11 @@ TEST_CASE(strokeLineWithEndTaper) {
     CHECK_NEAR(result.liftVelocity, 29.0 / 30.0 * 1000.0, 1e-6);
     CHECK(result.dabs.size() > 50);
     if (result.dabs.size() > 2) {
-        CHECK_NEAR(result.dabs.front().radius, 6.0, 1e-9);
+        CHECK_NEAR(result.dabs.front().radius, 0.0, 1e-9);
+        for (const Dab& d : result.dabs) {
+            if (d.arc >= 7.0 && d.arc <= 40.0) CHECK_NEAR(d.radius, 6.0, 1e-9);  // full width from 7 px on
+            if (d.arc > 0.5 && d.arc < 6.5) CHECK(d.radius > 0.0 && d.radius < 6.0);
+        }
         CHECK_NEAR(result.dabs.back().center.x, 100.0, 1e-9);  // the real end, not the filtered lag
         CHECK_NEAR(result.dabs.back().radius, 0.0, 1e-9);
         for (std::size_t i = 1; i < result.dabs.size(); ++i) CHECK(result.dabs[i].arc > result.dabs[i - 1].arc);
@@ -237,6 +242,40 @@ TEST_CASE(strokeShortApex) {
     bool visible = false;
     for (const Dab& d : result.dabs) visible = visible || (d.radius > 0 && d.inkWeight > 0);
     CHECK(visible);
+}
+
+// The size slider scales the tapers with the brush: at 3 px the dip pen is full width after 1.75 px.
+TEST_CASE(taperScalesWithSize) {
+    StrokeBuilder builder(brush("core.dip"), 3);
+    std::vector<Dab> finals;
+    for (int i = 0; i <= 60; ++i) builder.add({static_cast<double>(i), {static_cast<double>(i), 50}, 1.0}, finals);
+    const StrokeResult result = builder.finish({61, {60, 50}, 1.0});
+    bool sawRamp = false;
+    for (const Dab& d : result.dabs) {
+        if (d.arc >= 1.75 && d.arc <= 20.0) CHECK_NEAR(d.radius, 1.5, 1e-9);
+        if (d.arc > 0.2 && d.arc < 1.6) sawRamp = sawRamp || (d.radius > 0.0 && d.radius < 1.5);
+    }
+    CHECK(sawRamp);
+    // A tap is still one full stamp.
+    StrokeBuilder tap(brush("core.dip"), 3);
+    std::vector<Dab> none;
+    tap.add({0, {10, 10}, 1.0}, none);
+    const StrokeResult dot = tap.finish({5, {10, 10}, 1.0});
+    CHECK(dot.dabs.size() == 1 && !dot.dabs.empty() && std::abs(dot.dabs[0].radius - 1.5) < 1e-12);
+}
+
+// The hard pen answers pressure as ibisPaint's dip pen, measured with the same synthetic pen: width share
+// of the full size at 2 … 100 % pressure, opacity independent of pressure.
+TEST_CASE(hardPenPressureMatchesIbisPaint) {
+    const BrushProfile& pen = brush("core.dip");
+    const Style style{pen.tip.diameter, pen.ink.minSize, pen.ink.spacing, pen.sizeCurve, pen.opacityCurve};
+    const std::pair<double, double> measured[] = {{0.02, 0.0526}, {0.05, 0.0693}, {0.1, 0.1013}, {0.2, 0.1680},
+                                                  {0.3, 0.2298}, {0.5, 0.3822}, {0.7, 0.5847}, {1.0, 1.0}};
+    for (const auto& [pressure, share] : measured) {
+        CHECK_NEAR(diameter(style, pressure) / pen.tip.diameter, share, 0.01);
+        CHECK_NEAR(opacityAt(style, pressure, pen.ink.opacity, pen.ink.minOpacity), 1.0, 1e-12);
+    }
+    CHECK(diameter(style, 0.0) / pen.tip.diameter < 0.05);  // a hairline at the lightest touch
 }
 
 TEST_CASE(fountainFollowsTilt) {
@@ -344,6 +383,18 @@ TEST_CASE(srgbTransfer) {
     CHECK_NEAR(srgbToLinear(0.5), 0.21404114, 1e-7);
     CHECK_NEAR(srgbToLinear(0.04045), 0.04045 / 12.92, 1e-15);
     for (const double e : {0.0, 0.01, 0.2, 0.5, 0.8, 1.0}) CHECK_NEAR(linearToSrgb(srgbToLinear(e)), e, 1e-12);
+    // The canvas ink: encoded sRGB times alpha, as painting editors blend (50 % black over white is 128).
+    const auto ink = premultipliedInk(1.0, 0.0, 0.5, 0.5);
+    CHECK(ink[0] == 0.5f && ink[1] == 0.0f && ink[2] == 0.25f && ink[3] == 0.5f);
+    const auto clamped = premultipliedInk(1.5, -1.0, 0.5, 2.0);
+    CHECK(clamped[0] == 1.0f && clamped[1] == 0.0f && clamped[2] == 0.5f && clamped[3] == 1.0f);
+    // 0.1.0 files: linear premultiplied → the same colour as canvas ink.
+    const auto migrated = linearPmaToInk(0.5 * 0.21404114, 0.0, 0.5, 0.5);
+    CHECK_NEAR(migrated[0], 0.25, 1e-6);
+    CHECK_NEAR(migrated[2], 0.5, 1e-6);
+    CHECK(migrated[3] == 0.5f);
+    const auto empty = linearPmaToInk(0.3, 0.2, 0.1, 0.0);
+    CHECK(empty[0] == 0.0f && empty[3] == 0.0f);
     const auto p = premultipliedLinear(1.0, 0.0, 0.5, 0.5);
     CHECK_NEAR(p[0], 0.5, 1e-7);
     CHECK_NEAR(p[2], 0.5 * 0.21404114, 1e-6);

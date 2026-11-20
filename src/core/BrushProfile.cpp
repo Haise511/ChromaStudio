@@ -53,17 +53,25 @@ std::vector<BrushProfile> makeCatalog() {
     constexpr auto kMaxInk = Accumulate::Max;
     constexpr auto kBuildInk = Accumulate::Build;
     constexpr auto kSmooth = TaperShape::Smooth;
+    constexpr auto kLinear = TaperShape::Linear;
     constexpr auto kOff = StabilizerMethod::Off;
     constexpr auto kEma = StabilizerMethod::Ema;
     constexpr auto kWindow = StabilizerMethod::Window;
 
     std::vector<BrushProfile> catalog;
-    catalog.push_back(make("core.dip", "Твёрдое перо", Dip, {12, 1, 1, 0, kFixed}, {1, 1, kMaxInk, 0.1, 0.85, 0.08},
-                           {kEma, 10}, {0, 6, 0.5, kSmooth, 1, 0}));
+    // Pens grow from nothing over about 0.6 of their diameter, linearly — the start of ibisPaint's dip
+    // pen (measured: 95 % of the width after 0.53 widths).
+    // Pressure as on ibisPaint's dip pen (measured with the same synthetic pen): it changes the width only,
+    // the opacity stays; the curve is convex — half pressure gives 38 % of the width, 70 % gives 59 % —
+    // and light pressure goes down to a 4 % hairline, drawn lighter rather than thicker.
+    BrushProfile dip = make("core.dip", "Твёрдое перо", Dip, {12, 1, 1, 0, kFixed}, {1, 1, kMaxInk, 0.04, 1, 0.08},
+                            {kEma, 10}, {7, 6, 0.5, kLinear, 1, 0});
+    dip.sizeCurve = {{0, 0}, {0.05, 0.03}, {0.1, 0.064}, {0.2, 0.133}, {0.3, 0.198}, {0.5, 0.356}, {0.7, 0.568}, {1, 1}};
+    catalog.push_back(std::move(dip));
     catalog.push_back(make("core.fade", "Мягкое перо", Fade, {18, 1, 0.6, 0, kFixed},
                            {0.95, 1, kMaxInk, 0.15, 0.1, 0.08}, {kEma, 14}, {8, 24, 1, kSmooth, 1, 1}));
     catalog.push_back(make("core.fountain", "Перьевая ручка", Fountain, {16, 0.32, 0.95, 35, kTilt},
-                           {1, 1, kMaxInk, 0.3, 0.8, 0.055}, {kWindow, 16}, {2, 8, 0.5, kSmooth, 1, 0}));
+                           {1, 1, kMaxInk, 0.3, 0.8, 0.055}, {kWindow, 16}, {10, 8, 0.5, kLinear, 1, 0}));
     catalog.push_back(make("core.airbrush", "Аэрограф", Airbrush, {96, 1, 0, 0, kFixed},
                            {0.7, 0.12, kBuildInk, 0.6, 0.2, 0.12}, {kOff, 0}, {0, 0, 0, kSmooth, 0, 0}));
 

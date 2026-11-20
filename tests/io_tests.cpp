@@ -891,14 +891,15 @@ TEST_CASE(pictureExchange) {
     CHECK(r5.width == 2 && at(r5, 1, 0) == 3 && at(r5, 0, 2) == 2);
     CHECK(project::orient(image, 1).rgba == image.rgba && project::orient(image, 2).rgba[0] == 2);
 
-    // JPEG over the background: a transparent pixel is the background, half-covered red mixes in linear.
+    // JPEG over the background: a transparent pixel is the background; half-covered red mixes as the
+    // canvas does, in encoded sRGB (0.5 → 128).
     std::uint16_t clear[4] = {0, 0, 0, 0};
     std::uint8_t rgb[3];
     project::pmaOverToSrgb8(clear, {1, 1, 1}, rgb);
     CHECK(rgb[0] == 255 && rgb[1] == 255 && rgb[2] == 255);
     const std::uint16_t half[4] = {core::floatToHalf(0.5f), 0, 0, core::floatToHalf(0.5f)};
     project::pmaOverToSrgb8(half, {1, 1, 1}, rgb);
-    CHECK(rgb[0] == 255 && rgb[1] == 188 && rgb[2] == 188);  // linear 0.5 → sRGB 188
+    CHECK(rgb[0] == 255 && rgb[1] == 128 && rgb[2] == 128);
 
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return;
     // PNG in memory decodes back to the same straight pixels.
@@ -946,6 +947,40 @@ TEST_CASE(pictureExchange) {
     CoUninitialize();
 }
 
+// Version 0.1.0 stored linear light: such files open converted to the sRGB canvas, tiles and vector
+// colours, flagged as migrated; what is written again says "srgb-pma-f16le".
+TEST_CASE(linearFilesMigrateToSrgb) {
+    project::ProjectSnapshot s = sampleProject();
+    auto grey = std::make_shared<core::TileData>();
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) setPixel(*grey, x, y, 0.21404114f, 0.21404114f, 0.21404114f, 1.0f);
+    }
+    s.tiles = {{1, 0, 0, grey}};
+    std::string manifest = project::manifestJson(s);
+    CHECK(manifest.find("\"srgb-pma-f16le\"") != std::string::npos);
+    manifest.replace(manifest.find("\"srgb-pma-f16le\""), 16, "\"linear-srgb-pma-f16le\"");
+    project::Entries entries;
+    entries["manifest.json"].assign(reinterpret_cast<const std::byte*>(manifest.data()),
+                                    reinterpret_cast<const std::byte*>(manifest.data()) + manifest.size());
+    const auto tile = std::as_bytes(std::span(grey->halfs));
+    entries["tiles/1/0_0.bin"].assign(tile.begin(), tile.end());
+    const project::LoadResult r = project::loadFromEntries(entries);
+    CHECK(r.snapshot && r.snapshot->migratedFromLinear && r.snapshot->tiles.size() == 1);
+    if (r.snapshot && !r.snapshot->tiles.empty()) {
+        const float v = core::halfToFloat(r.snapshot->tiles[0].data->halfs[0]);
+        CHECK(std::abs(v - 0.5f) < 0.001f);  // linear 0.214 is sRGB 0.5
+        CHECK(core::halfToFloat(r.snapshot->tiles[0].data->halfs[3]) == 1.0f);
+        CHECK(project::manifestJson(*r.snapshot).find("\"srgb-pma-f16le\"") != std::string::npos);
+    }
+    // A current file is not migrated.
+    const std::string currentManifest = project::manifestJson(s);
+    entries["manifest.json"].assign(reinterpret_cast<const std::byte*>(currentManifest.data()),
+                                    reinterpret_cast<const std::byte*>(currentManifest.data()) + currentManifest.size());
+    const project::LoadResult current = project::loadFromEntries(entries);
+    CHECK(current.snapshot && !current.snapshot->migratedFromLinear &&
+          core::halfToFloat(current.snapshot->tiles[0].data->halfs[0]) == core::halfToFloat(grey->halfs[0]));
+}
+
 TEST_CASE(pngExportStraightAlpha) {
     std::uint8_t out[4];
     const std::uint16_t transparent[4] = {core::floatToHalf(0.3f), 0, 0, 0};
@@ -954,10 +989,10 @@ TEST_CASE(pngExportStraightAlpha) {
     const std::uint16_t halfRed[4] = {core::floatToHalf(0.5f), 0, 0, core::floatToHalf(0.5f)};
     project::pmaToStraightSrgb8(halfRed, out);
     CHECK(out[0] == 255 && out[1] == 0 && out[3] == 128);
-    const std::uint16_t grey[4] = {core::floatToHalf(0.21404114f), core::floatToHalf(0.21404114f),
-                                   core::floatToHalf(0.21404114f), core::floatToHalf(1.0f)};
+    const std::uint16_t grey[4] = {core::floatToHalf(0.25f), core::floatToHalf(0.25f), core::floatToHalf(0.25f),
+                                   core::floatToHalf(0.5f)};
     project::pmaToStraightSrgb8(grey, out);
-    CHECK(out[0] >= 127 && out[0] <= 128 && out[3] == 255);  // linear 0.214 is sRGB 0.5
+    CHECK(out[0] == 128 && out[3] == 128);  // the canvas value straight: 0.25 / 0.5
 
     // Through WIC and back: 300 × 200 with the sample tiles.
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return;

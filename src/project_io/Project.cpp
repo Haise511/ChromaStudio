@@ -1,5 +1,8 @@
 #include "project_io/Project.hpp"
 
+#include "core/Color.hpp"
+#include "core/Half.hpp"
+
 #include "project_io/BrushJson.hpp"
 #include "project_io/Json.hpp"
 #include "project_io/Zip.hpp"
@@ -27,7 +30,8 @@ using json::Value;
 constexpr int kMajor = 1;
 constexpr int kMinor = 0;
 constexpr std::string_view kFormat = "chroma.rawproj";
-constexpr std::string_view kColor = "linear-srgb-pma-f16le";
+constexpr std::string_view kColor = "srgb-pma-f16le";
+constexpr std::string_view kLegacyLinearColor = "linear-srgb-pma-f16le";  // version 0.1.0
 constexpr std::size_t kMaxLayers = 4096;  // spec §10.3
 constexpr int kMaxDepth = 64;
 constexpr std::uint64_t kMaxManifestBytes = std::uint64_t{256} << 20;
@@ -271,7 +275,11 @@ ProjectSnapshot parseManifest(const Value& m, std::vector<TileRef>& tiles,
     s.width = static_cast<int>(integer("width", 1, 32768));
     s.height = static_cast<int>(integer("height", 1, 32768));
     s.dpi = static_cast<int>(integer("dpi", 1, 2400));
-    if (!field("color").isString() || field("color").asString() != kColor) fail("manifest.json: неизвестное цветовое пространство");
+    if (!field("color").isString() ||
+        (field("color").asString() != kColor && field("color").asString() != kLegacyLinearColor)) {
+        fail("manifest.json: неизвестное цветовое пространство");
+    }
+    s.migratedFromLinear = field("color").asString() == kLegacyLinearColor;
     if (integer("tileSize", 1, 1 << 16) != core::kTileSize) fail("manifest.json: поддерживается только tileSize 128");
     s.nextId = parseId(field("nextId"), "nextId");
     s.active = parseId(field("active"), "active");
@@ -664,7 +672,22 @@ static ProjectSnapshot loadFrom(const EntryAccess& src) {
             const std::string problem =
                 core::validateTile(*data, core::tileExtent(snapshot.width, snapshot.height, t.tx, t.ty));
             if (!problem.empty()) fail(name + ": " + problem);
+            if (snapshot.migratedFromLinear) {
+                for (std::size_t i = 0; i < data->halfs.size(); i += 4) {
+                    const auto p = core::linearPmaToInk(core::halfToFloat(data->halfs[i]), core::halfToFloat(data->halfs[i + 1]),
+                                                        core::halfToFloat(data->halfs[i + 2]), core::halfToFloat(data->halfs[i + 3]));
+                    for (std::size_t c = 0; c < 4; ++c) data->halfs[i + c] = core::floatToHalf(p[c]);
+                }
+            }
             snapshot.tiles.push_back({t.layer, t.tx, t.ty, std::move(data)});
+        }
+        if (snapshot.migratedFromLinear) {
+            // Vector colours were straight linear light.
+            for (auto& [layer, objects] : snapshot.vectors) {
+                for (core::VectorObject& o : objects) {
+                    for (int c = 0; c < 3; ++c) o.rgba[static_cast<std::size_t>(c)] = core::linearToSrgb(std::clamp(o.rgba[static_cast<std::size_t>(c)], 0.0, 1.0));
+                }
+            }
         }
         return snapshot;
     }

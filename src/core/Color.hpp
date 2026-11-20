@@ -1,9 +1,11 @@
 #pragma once
 // ChromaStudio Engine · core · colour (spec §2, §11.1).
 //
-// The document stores linear sRGB with premultiplied alpha; encoded sRGB exists only at the edges
-// (colour pickers, display, files). HSV is defined on encoded sRGB and converted to RGB through six
-// sectors (spec §11.1 "Круг HSV").
+// The canvas stores encoded sRGB values with premultiplied alpha and blends them as they are — the
+// space painting editors blend in (ibisPaint, Photoshop's default): 50 % black over white is 128.
+// Linear-light helpers remain for files of version 0.1.0, which stored linear light, and for the
+// linear-light maths a filter may need. HSV is defined on encoded sRGB and converted to RGB through
+// six sectors (spec §11.1 "Круг HSV").
 
 #include <algorithm>
 #include <array>
@@ -21,9 +23,24 @@ inline double srgbToLinear(double e) { return e <= 0.04045 ? e / 12.92 : std::po
 
 inline double linearToSrgb(double c) { return c <= 0.0031308 ? 12.92 * c : 1.055 * std::pow(c, 1.0 / 2.4) - 0.055; }
 
-/// Encoded sRGB colour with straight alpha → canonical linear premultiplied pixel P = (a·r, a·g, a·b, a).
+/// Encoded sRGB colour with straight alpha → the canvas pixel P = (a·r, a·g, a·b, a).
+inline std::array<float, 4> premultipliedInk(double r, double g, double b, double a) {
+    a = std::clamp(a, 0.0, 1.0);
+    const auto channel = [a](double e) { return static_cast<float>(a * std::clamp(e, 0.0, 1.0)); };
+    return {channel(r), channel(g), channel(b), static_cast<float>(a)};
+}
+
+/// Encoded sRGB colour with straight alpha → linear-light premultiplied (the 0.1.0 canvas).
 inline std::array<float, 4> premultipliedLinear(double r, double g, double b, double a) {
     const auto channel = [a](double e) { return static_cast<float>(a * srgbToLinear(e)); };
+    return {channel(r), channel(g), channel(b), static_cast<float>(a)};
+}
+
+/// A linear-light premultiplied pixel (0.1.0 files) → the same colour as a canvas pixel.
+inline std::array<float, 4> linearPmaToInk(double r, double g, double b, double a) {
+    if (!(a > 0.0)) return {0.0f, 0.0f, 0.0f, 0.0f};
+    a = std::min(a, 1.0);
+    const auto channel = [a](double c) { return static_cast<float>(a * linearToSrgb(std::clamp(c / a, 0.0, 1.0))); };
     return {channel(r), channel(g), channel(b), static_cast<float>(a)};
 }
 

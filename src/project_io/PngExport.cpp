@@ -45,7 +45,7 @@ void pmaToStraightSrgb8(const std::uint16_t* halfs, std::uint8_t* rgba) {
     }
     for (int c = 0; c < 3; ++c) {
         const double straight = std::clamp(static_cast<double>(core::halfToFloat(halfs[c])) / a, 0.0, 1.0);
-        rgba[c] = static_cast<std::uint8_t>(std::lround(core::linearToSrgb(straight) * 255.0));
+        rgba[c] = static_cast<std::uint8_t>(std::lround(straight * 255.0));
     }
     rgba[3] = alpha8;
 }
@@ -53,8 +53,8 @@ void pmaToStraightSrgb8(const std::uint16_t* halfs, std::uint8_t* rgba) {
 void pmaOverToSrgb8(const std::uint16_t* halfs, const std::array<float, 3>& background, std::uint8_t* rgb) {
     const double a = std::clamp(static_cast<double>(core::halfToFloat(halfs[3])), 0.0, 1.0);
     for (int c = 0; c < 3; ++c) {
-        const double linear = std::clamp(static_cast<double>(core::halfToFloat(halfs[c])) + (1.0 - a) * background[static_cast<std::size_t>(c)], 0.0, 1.0);
-        rgb[c] = static_cast<std::uint8_t>(std::lround(core::linearToSrgb(linear) * 255.0));
+        const double over = std::clamp(static_cast<double>(core::halfToFloat(halfs[c])) + (1.0 - a) * background[static_cast<std::size_t>(c)], 0.0, 1.0);
+        rgb[c] = static_cast<std::uint8_t>(std::lround(over * 255.0));
     }
 }
 
@@ -201,8 +201,8 @@ std::string exportPng(const std::filesystem::path& path, int width, int height, 
 }
 
 std::string exportJpeg(const std::filesystem::path& path, int width, int height, const TileSource& tiles,
-                       const std::array<float, 3>& backgroundLinear) {
-    return exportImage(path, width, height, tiles, {true, backgroundLinear});
+                       const std::array<float, 3>& background) {
+    return exportImage(path, width, height, tiles, {true, background});
 }
 
 }  // namespace chroma::project

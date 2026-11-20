@@ -83,7 +83,7 @@ void BrushPreview::render(Entry& entry) {
         return it == entry.tiles.end() ? nullptr : it->second;
     };
     render::BrushSetup setup = render::brushSetupFor(
-        profile, core::premultipliedLinear(key.color[0], key.color[1], key.color[2], key.alpha), false);
+        profile, core::premultipliedInk(key.color[0], key.color[1], key.color[2], key.alpha), false);
     if (resolver_) resolver_(setup, profile);
 
     const auto stroke = [&](const std::vector<core::StrokeSample>& samples, double diameter) {
@@ -109,8 +109,8 @@ void BrushPreview::render(Entry& entry) {
 
     if (profile.wet) {
         // §11.1: the watercolor preview gets a constant two-colour ground to carry pigment from.
-        const std::array<float, 4> left = core::premultipliedLinear(0.98, 0.92, 0.74, 1.0);
-        const std::array<float, 4> right = core::premultipliedLinear(0.72, 0.86, 0.97, 1.0);
+        const std::array<float, 4> left = core::premultipliedInk(0.98, 0.92, 0.74, 1.0);
+        const std::array<float, 4> right = core::premultipliedInk(0.72, 0.86, 0.97, 1.0);
         for (int ty = 0; ty * render::kTileSize < key.height; ++ty) {
             for (int tx = 0; tx * render::kTileSize < key.width; ++tx) {
                 auto data = std::make_shared<core::TileData>();

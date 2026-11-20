@@ -25,7 +25,8 @@ for files, `tests/gpu_tests.cpp` for rendering, `tests/ui_tests.cpp` for the int
 - C++20, MSVC; no third-party dependencies and no network access in the build or at run time.
 - Code comments in English; user-facing text in Russian (an English interface is on the roadmap).
 - Keep `core` free of Win32 and OpenGL; it must stay testable without a window.
-- Pixels are linear-light, premultiplied RGBA16F; keep GPU results within 0.002 of the CPU reference.
+- Pixels are sRGB values with premultiplied alpha in RGBA16F, blended as they are (like ibisPaint and
+  Photoshop); keep GPU results within 0.002 of the CPU reference.
 
 ## Licence
 
